@@ -10,6 +10,12 @@ import torch_geometric.transforms as T
 
 import time
 import numpy as np
+
+import random
+np.random.seed(0)
+random.seed(0)
+from tqdm import tqdm
+
 import matplotlib.pyplot as plt
 import cv2
 from easydict import EasyDict
@@ -27,6 +33,37 @@ from training.plots import plot_metrics
 from training.losses import MatchingLoss, PairwiseRankingLoss, HardestRankingLoss
 from training.utils import plot_retrievals
 
+def train_scanscribe(model, dataloader, optimizer, criterion, args):
+    model.train()
+    epoch_losses = []
+
+    batches = []
+    printed = False
+    for i_batch, batch in enumerate(dataloader):
+        if args.max_batches is not None and i_batch >= args.max_batches:
+            break
+
+        batch_size = len(batch["texts"])
+
+        optimizer.zero_grad()
+        anchor = model.encode_text(batch["texts"])
+        positive = model.encode_objects(batch["objects"], batch["object_points"])
+
+        if args.ranking_loss == "triplet":
+            negative_cell_objects = [cell.objects for cell in batch["negative_cells"]]
+            negative = model.encode_objects(negative_cell_objects)
+            loss = criterion(anchor, positive, negative)
+        else:
+            loss = criterion(anchor, positive)
+
+        loss = loss
+        loss.backward()
+        optimizer.step()
+
+        epoch_losses.append(loss.item())
+        batches.append(batch)
+
+    return np.mean(epoch_losses), batches, model
 
 def train_epoch(model, dataloader, args):
     model.train()
@@ -61,8 +98,81 @@ def train_epoch(model, dataloader, args):
 
     return np.mean(epoch_losses), batches
 
-
 printed = False
+
+def calculate_scores(im, s):
+    # turn to torch
+    im = torch.tensor(im)
+    s = torch.tensor(s)
+    im = im / torch.norm(im, dim=1, keepdim=True)
+    s = s / torch.norm(s, dim=1, keepdim=True)
+
+    # compute image-sentence score matrix
+    scores = torch.mm(im, s.transpose(1, 0))
+    # print(scores)
+    return scores
+
+@torch.no_grad()
+def eval_scanscribe(model, dataloader, args):
+    model.eval()
+
+    cell_encodings = np.zeros((len(dataloader), model.embed_dim))
+    db_cell_ids = np.zeros(len(dataloader), dtype="<U32")
+
+    text_encodings = np.zeros((len(dataloader.dataset), model.embed_dim))
+    query_cell_ids = np.zeros(len(dataloader.dataset), dtype="<U32")
+    # query_poses_w = np.array([pose.pose_w[0:2] for pose in dataloader.dataset.all_poses])
+
+    t0 = time.time()
+    index_offset_text = 0
+    index_offset_cell = 0
+
+    # Encode the query side
+    for batch in dataloader:
+        text_enc = model.encode_text(batch["texts"])
+        cell_enc = model.encode_objects(batch["objects"], batch["object_points"])
+
+        batch_size_text = len(text_enc)
+        batch_size_cell = len(cell_enc)
+
+        text_encodings[index_offset_text : index_offset_text + batch_size_text, :] = (
+            text_enc.cpu().detach().numpy()
+        )
+
+        cell_encodings[index_offset_cell : index_offset_cell + batch_size_cell, :] = (
+            cell_enc.cpu().detach().numpy()
+        )
+
+        query_cell_ids[index_offset_text : index_offset_text + batch_size_text] = np.array(batch["cell_ids"])
+        index_offset_text += batch_size_text
+
+        db_cell_ids[index_offset_cell : index_offset_cell + batch_size_cell] = np.array(batch["cell_ids"])
+        index_offset_cell += batch_size_cell
+
+    print(f"Encoded {len(text_encodings)} query texts in {time.time() - t0:0.2f}.")
+    print(f"Encoded {len(cell_encodings)} database cells in {time.time() - t0:0.2f}.")
+
+    # go through all the embeddings and get a score between each, NxM
+    assert(len(cell_encodings) == len(text_encodings))
+    # scores = cell_encodings[:] @ text_encodings.T # NxM where N is the number of cells and M is the number of texts
+    scores = calculate_scores(cell_encodings, text_encodings) 
+
+    # randomly sample 100 indices from len(cell_encodings)
+    within_top_ks = {k: [] for k in args.top_k}
+    for _ in tqdm(range(args.eval_iter)):
+        sampled_indices = np.random.choice(len(text_encodings), args.out_of, replace=False)
+        text_query_idx = sampled_indices[0]
+
+        # get the scores for the sampled indices
+        sampled_scores = scores[sampled_indices, text_query_idx]
+        sorted_indices = np.argsort(-1.0 * sampled_scores)  # High -> low
+        sampled_indices = sampled_indices[sorted_indices]
+
+        for k in within_top_ks: within_top_ks[k].append(text_query_idx in sampled_indices[0:k])
+    print(f'length of within_top_ks: {len(within_top_ks[1])}')
+    # return the retrieval accuracies and retrievals
+    retrieval_accuracies = {k: np.mean(within_top_ks[k]) for k in args.top_k}
+    return retrieval_accuracies
 
 
 @torch.no_grad()
