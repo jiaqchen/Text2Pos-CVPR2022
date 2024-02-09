@@ -19,6 +19,8 @@ from training.coarse import eval_scanscribe as eval
 import torch_geometric.transforms as T
 
 random.seed(0)
+import numpy as np
+np.random.seed(0)
 
 class ScanScribeCoarseDataset(Dataset):
     def __init__(
@@ -76,7 +78,8 @@ class ScanScribeCoarseDataset(Dataset):
 
 def get_text_dataset_from_scanscribe():
     texts = []
-    path_to_scanscribe_json = '/home/julia/Documents/h_coarse_loc/data/scanscribe/data/scanscribe_cleaned.json'
+    if (args.euler): path_to_scanscribe_json = '/cluster/project/cvg/jiaqchen/Text2Pos-CVPR2022/data/scanscribe_cleaned.json'
+    else: path_to_scanscribe_json = '/home/julia/Documents/h_coarse_loc/data/scanscribe/data/scanscribe_cleaned.json'
     with open(path_to_scanscribe_json, 'r') as f:
         scanscribe_json = json.load(f)
     print(f'loading texts')
@@ -92,8 +95,8 @@ def get_text_dataset_from_scanscribe():
     else: return texts, list(scene_names)
 
 def get_cells_dataset_from_3rscan(scene_names: List[str]):
-    path_to_all_cells = '/home/julia/Documents/h_coarse_loc/baselines/Text2Pos-CVPR2022/test_outputs/cells'
-    cell_files = os.listdir(path_to_all_cells)
+    # path_to_all_cells = '/home/julia/Documents/h_coarse_loc/baselines/Text2Pos-CVPR2022/test_outputs/cells'
+    # cell_files = os.listdir(path_to_all_cells)
 
     # cells_dict = {}
     # for c_file in tqdm(cell_files): # torch files
@@ -101,7 +104,8 @@ def get_cells_dataset_from_3rscan(scene_names: List[str]):
     #     cell = torch.load(c_file_path)
     #     cells_dict[cell.scene_name] = cell
     # torch.save(cells_dict, '/home/julia/Documents/h_coarse_loc/baselines/Text2Pos-CVPR2022/test_outputs/cells_dict.pth')
-    cells_dict = torch.load('/home/julia/Documents/h_coarse_loc/baselines/Text2Pos-CVPR2022/test_outputs/cells_dict.pth')
+    if (args.euler): cells_dict = torch.load('/cluster/project/cvg/jiaqchen/Text2Pos-CVPR2022/data/cells_dict.pth')
+    else: cells_dict = torch.load('/home/julia/Documents/h_coarse_loc/baselines/Text2Pos-CVPR2022/test_outputs/cells_dict.pth')
 
     all_cells = []
     for scene_name in tqdm(scene_names):
@@ -109,7 +113,8 @@ def get_cells_dataset_from_3rscan(scene_names: List[str]):
     return all_cells
 
 def get_known_words():
-    path_to_scanscribe_json = '/home/julia/Documents/h_coarse_loc/data/scanscribe/data/scanscribe_cleaned.json'
+    if (args.euler): path_to_scanscribe_json = '/cluster/project/cvg/jiaqchen/Text2Pos-CVPR2022/data/scanscribe_cleaned.json'
+    else: path_to_scanscribe_json= '/home/julia/Documents/h_coarse_loc/data/scanscribe/data/scanscribe_cleaned.json'
     with open(path_to_scanscribe_json, 'r') as f:
         scanscribe_json = json.load(f)
 
@@ -128,14 +133,36 @@ def get_known_words():
 
     return dict_words
 
+
+def get_dataloader(cells, texts, scene_names, transform, args):
+    dataset = ScanScribeCoarseDataset(
+        cells=cells,
+        texts=texts,
+        cell_ids=[cell.id for cell in cells],
+        scene_names=scene_names,
+        transform=transform
+    )
+
+    dataloader = DataLoader(
+        dataset,
+        batch_size=args.batch_size_val,
+        collate_fn=dataset.collate_fn,
+        shuffle=False
+    )
+    return dataloader
+
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--batch_size', type=int, default=1)
+    parser.add_argument('--batch_size_val', type=int, default=1)
     parser.add_argument('--pointnet_numpoints', type=int, default=256)
-    parser.add_argument('--top_k', type=int, nargs='+', default=[1, 5, 10, 25, 50])
-    parser.add_argument('--out_of', type=int, default=100)
+    parser.add_argument('--top_k', type=int, nargs='+', default=[1, 2, 3, 5])
+    parser.add_argument('--out_of', type=int, default=10)
     parser.add_argument('--eval_iter', type=int, default=2000000)
     parser.add_argument('--dataset_subset', type=int, default=None)
+    parser.add_argument('--euler', type=bool, default=False)
+    parser.add_argument('--separate_cells_by_scene', type=bool, default=True)
+    parser.add_argument('--eval_iter_count', type=int, default=10)
     args = parser.parse_args()
 
     # Load the coarse model from Text2Pos, pretrained
@@ -143,7 +170,9 @@ if __name__ == '__main__':
 
     # Load fine tuned model
     # model = torch.load(f'/home/julia/Documents/h_coarse_loc/baselines/Text2Pos-CVPR2022/checkpoints/coarse_julia_fine_tuned_epochs_END.pth')
-    model = torch.load(f'/home/julia/Documents/h_coarse_loc/baselines/Text2Pos-CVPR2022/checkpoints/coarse_julia_fine_tuned_epochs_END_dataset_subset_{args.dataset_subset}.pth')
+    prefix = '/cluster/project/cvg/jiaqchen' if args.euler else '/home/julia/Documents/h_coarse_loc/baselines'
+    # model = torch.load(f'{prefix}/Text2Pos-CVPR2022/checkpoints/coarse_julia_fine_tuned_epochs_119_END.pth')
+    model = torch.load(f'{prefix}/Text2Pos-CVPR2022/checkpoints/coarse_julia_fine_tuned_epochs_6_batch_size_16.pth')
 
     print(f'model attribute variation: {model.variation}')
     print(f'model atribute embed_dim: {model.embed_dim}')
@@ -153,38 +182,78 @@ if __name__ == '__main__':
 
     model.eval()
 
-    # Create a DataLoader with the same format as the Text2Pos dataset but from the 3RScan/3DSSG dataset
-    text_list, scene_names = get_text_dataset_from_scanscribe()
-    cells_list = get_cells_dataset_from_3rscan(scene_names)
-    print(f'length of scene_names: {len(scene_names)}')
-    # torch.save(cells_list, '/home/julia/Documents/h_coarse_loc/baselines/Text2Pos-CVPR2022/test_outputs/cells_list.pth')
-    # cells_list = torch.load('/home/julia/Documents/h_coarse_loc/baselines/Text2Pos-CVPR2022/test_outputs/cells_list.pth')
+    # # Create a DataLoader with the same format as the Text2Pos dataset but from the 3RScan/3DSSG dataset
+    # text_list, scene_names = get_text_dataset_from_scanscribe()
+    # cells_list = get_cells_dataset_from_3rscan(scene_names)
+    # print(f'length of scene_names: {len(scene_names)}')
+    # # torch.save(cells_list, '/home/julia/Documents/h_coarse_loc/baselines/Text2Pos-CVPR2022/test_outputs/cells_list.pth')
+    # # cells_list = torch.load('/home/julia/Documents/h_coarse_loc/baselines/Text2Pos-CVPR2022/test_outputs/cells_list.pth')
 
-    assert(len(text_list) == len(cells_list) == len(scene_names))
+    # assert(len(text_list) == len(cells_list) == len(scene_names))
+
+    # Create a DataLoader using the testing dataset that we sample, with same split for testing on OUR method
+    text_list_scanscribe_test = torch.load(f'{prefix}/Text2Pos-CVPR2022/training_testing_data/testing_text_scanscribe_text2pos.pt')
+    cell_list_scanscribe_test = torch.load(f'{prefix}/Text2Pos-CVPR2022/training_testing_data/testing_cells_scanscribe_text2pos.pt')
+    scene_names_scanscribe_test = [cell.scene_name for cell in cell_list_scanscribe_test]
+    ############### TAKE DATA DIRECTLY FROM training_testing_data
+    text_list = torch.load('./training_testing_data/training_text_scanscribe_text2pos.pt')
+    cells_list = torch.load('./training_testing_data/training_cells_scanscribe_text2pos.pt')
+
+    # randomly sample 85% for validation set, rest is test set
+    indices = list(range(len(text_list)))
+    random.shuffle(indices)
+    split = int(0.85 * len(text_list))
+    train_indices, val_indices = indices[:split], indices[split:]
+    text_list_train, text_list_val = [text_list[i] for i in train_indices], [text_list[i] for i in val_indices]
+    cells_list_train, cell_list_val = [cells_list[i] for i in train_indices], [cells_list[i] for i in val_indices]
+    scene_names_train = [cell.scene_name for cell in cells_list_train]
+    scene_names_val = [cell.scene_name for cell in cell_list_val]
+
+    text_list_human_test = torch.load(f'{prefix}/Text2Pos-CVPR2022/training_testing_data/testing_text_human_text2pos.pt')
+    cell_list_human_test = torch.load(f'{prefix}/Text2Pos-CVPR2022/training_testing_data/testing_cells_human_text2pos.pt')
+    scene_names_human_test = [cell.scene_name for cell in cell_list_human_test]
 
     # transform = T.FixedPoints(args.pointnet_numpoints)
     transform = T.Compose([T.FixedPoints(args.pointnet_numpoints), T.NormalizeScale()])
 
-    dataset = ScanScribeCoarseDataset(
-        cells=cells_list,
-        texts=text_list,
-        cell_ids=[cell.id for cell in cells_list],
-        scene_names=scene_names,
-        transform=transform
-    )
+    dataloader_scanscribe = get_dataloader(cell_list_scanscribe_test, text_list_scanscribe_test, scene_names_scanscribe_test, transform, args)
+    dataloader_scanscribe_train = get_dataloader(cells_list_train, text_list_train, scene_names_train, transform, args)
+    data_loader_scanscribe_val = get_dataloader(cell_list_val, text_list_val, scene_names_val, transform, args)
+    dataloader_human = get_dataloader(cell_list_human_test, text_list_human_test, scene_names_human_test, transform, args)
 
-    dataloader = DataLoader(
-        dataset,
-        batch_size=args.batch_size,
-        collate_fn=dataset.collate_fn,
-        shuffle=False
-    )
+    epochs = 6
 
+    import time
     print(f'Running evaluation on scanscribe')
-    # Run retrieval model to obtain top-cells
-    retrieval_accuracies = eval(
-        model, dataloader, args
+    start_time = time.time()
+    retrieval_accuracies_scanscribe = eval(
+        model, dataloader_scanscribe, args
     )
+    print(f'Elapsed time scanscribe: {time.time() - start_time}')
+    print(f'Retrieval Accuracies: {retrieval_accuracies_scanscribe}')
+    with open(f'{prefix}/Text2Pos-CVPR2022/eval_outputs/retrieval_accuracies_scanscribe_out_of_{args.out_of}_epochs_{epochs}_text2pos.json', 'w') as f:
+        json.dump(retrieval_accuracies_scanscribe, f, indent=4)
 
-    # print accuracies
-    print(f'Retrieval Accuracies: {retrieval_accuracies}')
+    # Scanscribe Train
+    retrieval_acc_scanscribe_train = eval(model, dataloader_scanscribe_train, args)
+    with open(f'{prefix}/Text2Pos-CVPR2022/eval_outputs/retrieval_accuracies_scanscribe_train_out_of_{args.out_of}_epochs_{epochs}_text2pos.json', 'w') as f:
+        json.dump(retrieval_acc_scanscribe_train, f, indent=4)
+    retrieval_acc_scanscribe_val = eval(model, data_loader_scanscribe_val, args)
+    with open(f'{prefix}/Text2Pos-CVPR2022/eval_outputs/retrieval_accuracies_scanscribe_val_out_of_{args.out_of}_epochs_{epochs}_text2pos.json', 'w') as f:
+        json.dump(retrieval_acc_scanscribe_val, f, indent=4)
+
+    if (args.out_of <= len(text_list_human_test)): 
+        print(f'Running evaluation on human')
+        start_time = time.time()
+        retrieval_accuracies_human = eval(
+            model, dataloader_human, args
+        )
+        print(f'Elapsed time human: {time.time() - start_time}')
+        print(f'Retrieval Accuracies: {retrieval_accuracies_human}')
+        with open(f'{prefix}/Text2Pos-CVPR2022/eval_outputs/retrieval_accuracies_human_out_of_{args.out_of}_epochs_{epochs}_text2pos.json', 'w') as f:
+            json.dump(retrieval_accuracies_human, f, indent=4)
+
+
+    # also save args from argparser
+    with open(f'{prefix}/Text2Pos-CVPR2022/eval_outputs/args_out_of_{args.out_of}_epochs_{epochs}.json', 'w') as f:
+        json.dump(vars(args), f, indent=4)
