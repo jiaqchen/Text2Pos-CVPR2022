@@ -1,4 +1,9 @@
+import open3d as o3d
+
 from typing import List
+
+import time
+import multiprocessing as mp
 
 import os
 import os.path as osp
@@ -211,35 +216,108 @@ class Kitti360CoarseCellOnlyDataset(Dataset):
 
     def __len__(self):
         return len(self.cells)
+    
+def make_and_save(scene_id):
+    # Open the '/home/julia/Documents/h_coarse_loc/baselines/Text2Pos-CVPR2022/test_outputs', 'points_with_sem_{}.pt' files and create the cells for each image.
+    base_path = "/home/julia/Documents/h_coarse_loc/baselines/Text2Pos-CVPR2022/test_outputs"
 
+    file_path = os.path.join(base_path, 'points_with_sem_{}.pt'.format(scene_id))
+    points_with_sem = torch.load(file_path)
+
+    object_points_dict = {}
+    for point in points_with_sem:
+        p, objectId, coords_colors, rgba, semantic_label = point
+
+        if objectId not in object_points_dict:
+            object_points_dict[objectId] = []
+
+        object_points_dict[objectId].append(point)
+
+    objects = []
+    for obj_id in object_points_dict:
+        points = object_points_dict[obj_id]
+        xyzs = [p[0] for p in points]
+        rgbs = [p[3] for p in points]
+        labels = [p[4] for p in points]
+        xyz = np.array(xyzs)
+        rgb = [c[0:3] for c in rgbs]
+        rgb = np.array(rgbs)
+
+        # assert(np.all(labels == labels[0])) # Need to check that labels are correct
+        objects.append(Object3d(id=objectId,
+                        instance_id=objectId, # JULIA: I hope this is correct
+                        xyz=xyz,
+                        rgb=rgb,
+                        label=labels[0]))
+    # Create cells
+    # min point in p's
+    p_s = np.array([p[0] for p in points_with_sem])
+    min_p = np.min(p_s, axis=0)
+    max_p = np.max(p_s, axis=0)
+    # Cell size is distance between min and max
+    cell_size = np.linalg.norm(max_p - min_p)        
+
+    # Generate a random 9 digit number for the cell id
+    cell_id = np.random.randint(1000000000, 9999999999)
+    cell = Cell(idx=cell_id, # if we have more cells per scene then need to change
+                scene_name=scene_id,
+                objects=objects,
+                cell_size=cell_size,
+                bbox_w=[0, 0, 0])
+    
+    # Save the cell in associated file
+    torch.save(cell, os.path.join(base_path, 'cells', 'cell_{}_{}.pt'.format(scene_id, str(cell_id))))
+
+
+def make_and_save_cells():
+    # Load the points_with_sem_{}.pt files
+    path_to_3rscan = '/home/julia/Documents/h_coarse_loc/data/3DSSG/3RScan/'
+    scene_ids = os.listdir(path_to_3rscan)
+
+    start = time.time()
+
+    p = mp.Pool(processes=mp.cpu_count())
+    # p.map(get_cells_from_3rscan, scene_ids)
+    p.map(make_and_save, scene_ids)
+    p.close()
+    p.join()
+
+    # end counting time
+    end = time.time()
+
+    print("Time taken: {} seconds".format(end - start))
+
+    
 
 if __name__ == "__main__":
-    base_path = "./data/k360_30-10_scG_pd10_pc8_spY_all_nm6/"
+    make_and_save_cells()
 
-    transform = T.FixedPoints(256)
+    # base_path = "./data/k360_30-10_scG_pd10_pc8_spY_all_nm6/"
 
-    for scene_names in (SCENE_NAMES, SCENE_NAMES_TRAIN, SCENE_NAMES_VAL, SCENE_NAMES_TEST):
-        dataset = Kitti360CoarseDatasetMulti(
-            base_path, scene_names, transform, shuffle_hints=False, flip_poses=False
-        )
-        # data = dataset[0]
-        # pose, cell, text = data['poses'], data['cells'], data['texts']
-        # offsets = np.array([descr.offset_closest for descr in pose.descriptions])
-        # hints = text.split('.')
-        # pose_f, cell_f, text_f, hints_f, offsets_f = flip_pose_in_cell(pose, cell, text, 1, hints=hints, offsets=offsets)
+    # transform = T.FixedPoints(256)
 
-        # Gather information about duplicate descriptions
-        descriptors = []
-        for pose in dataset.all_poses:
-            mentioned = sorted(
-                [f"{d.object_label}_{d.object_color_text}_{d.direction}" for d in pose.descriptions]
-            )
-            descriptors.append(mentioned)
+    # for scene_names in (SCENE_NAMES, SCENE_NAMES_TRAIN, SCENE_NAMES_VAL, SCENE_NAMES_TEST):
+    #     dataset = Kitti360CoarseDatasetMulti(
+    #         base_path, scene_names, transform, shuffle_hints=False, flip_poses=False
+    #     )
+    #     # data = dataset[0]
+    #     # pose, cell, text = data['poses'], data['cells'], data['texts']
+    #     # offsets = np.array([descr.offset_closest for descr in pose.descriptions])
+    #     # hints = text.split('.')
+    #     # pose_f, cell_f, text_f, hints_f, offsets_f = flip_pose_in_cell(pose, cell, text, 1, hints=hints, offsets=offsets)
 
-        unique, counts = np.unique(descriptors, return_counts=True)
-        # for d in descriptors[0:10]:
-        #     print('\t',d)
-        print(
-            f"{len(descriptors)} poses, {len(unique)} uniques, {np.max(counts)} max duplicates, {np.mean(counts):0.2f} mean duplicates"
-        )
-        print("---- \n\n")
+    #     # Gather information about duplicate descriptions
+    #     descriptors = []
+    #     for pose in dataset.all_poses:
+    #         mentioned = sorted(
+    #             [f"{d.object_label}_{d.object_color_text}_{d.direction}" for d in pose.descriptions]
+    #         )
+    #         descriptors.append(mentioned)
+
+    #     unique, counts = np.unique(descriptors, return_counts=True)
+    #     # for d in descriptors[0:10]:
+    #     #     print('\t',d)
+    #     print(
+    #         f"{len(descriptors)} poses, {len(unique)} uniques, {np.max(counts)} max duplicates, {np.mean(counts):0.2f} mean duplicates"
+    #     )
+    #     print("---- \n\n")
