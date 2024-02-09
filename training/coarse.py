@@ -127,52 +127,116 @@ def eval_scanscribe(model, dataloader, args):
     index_offset_text = 0
     index_offset_cell = 0
 
-    # Encode the query side
-    for batch in dataloader:
-        text_enc = model.encode_text(batch["texts"])
-        cell_enc = model.encode_objects(batch["objects"], batch["object_points"])
+    seen_cells = [] # should be scene name in order
+    text_scene_names = []
 
-        batch_size_text = len(text_enc)
-        batch_size_cell = len(cell_enc)
+    if (args.separate_cells_by_scene):
+        for batch in dataloader:
+            text_enc = model.encode_text(batch["texts"])
+            batch_size_text = len(text_enc)
+            text_encodings[index_offset_text : index_offset_text + batch_size_text, :] = (text_enc.cpu().detach().numpy())
+            query_cell_ids[index_offset_text : index_offset_text + batch_size_text] = np.array(batch["cell_ids"])
+            index_offset_text += batch_size_text
 
-        text_encodings[index_offset_text : index_offset_text + batch_size_text, :] = (
-            text_enc.cpu().detach().numpy()
-        )
+            new_batch_objects = []
+            new_batch_object_points = []
+            batch_scene_names = batch["scene_name"]
+            batch_object_points = batch["object_points"]
+            for idx, objs in enumerate(batch["objects"]):
+                text_scene_names.append(batch_scene_names[idx])
+                if batch_scene_names[idx] in seen_cells:
+                    continue
+                else:
+                    seen_cells.append(batch_scene_names[idx])
+                    new_batch_objects.append(objs)
+                    new_batch_object_points.append(batch_object_points[idx])
 
-        cell_encodings[index_offset_cell : index_offset_cell + batch_size_cell, :] = (
-            cell_enc.cpu().detach().numpy()
-        )
+            if len(new_batch_objects) == 0:
+                continue
+            cell_enc = model.encode_objects(new_batch_objects, new_batch_object_points)
+            batch_size_cell = len(cell_enc)
+            cell_encodings[index_offset_cell : index_offset_cell + batch_size_cell, :] = (cell_enc.cpu().detach().numpy())
+            index_offset_cell += batch_size_cell
 
-        query_cell_ids[index_offset_text : index_offset_text + batch_size_text] = np.array(batch["cell_ids"])
-        index_offset_text += batch_size_text
+        # prune cell_encodings only to where the index stopped
+        cell_encodings = cell_encodings[:index_offset_cell]
 
-        db_cell_ids[index_offset_cell : index_offset_cell + batch_size_cell] = np.array(batch["cell_ids"])
-        index_offset_cell += batch_size_cell
+        assert(len(set(seen_cells)) == len(seen_cells))
+        assert(len(cell_encodings) == len(seen_cells))
+    else:
+        # Encode the query side
+        for batch in dataloader:
+            text_enc = model.encode_text(batch["texts"])
+            cell_enc = model.encode_objects(batch["objects"], batch["object_points"])
 
-    print(f"Encoded {len(text_encodings)} query texts in {time.time() - t0:0.2f}.")
-    print(f"Encoded {len(cell_encodings)} database cells in {time.time() - t0:0.2f}.")
+            batch_size_text = len(text_enc)
+            batch_size_cell = len(cell_enc)
 
-    # go through all the embeddings and get a score between each, NxM
-    assert(len(cell_encodings) == len(text_encodings))
-    # scores = cell_encodings[:] @ text_encodings.T # NxM where N is the number of cells and M is the number of texts
-    scores = calculate_scores(cell_encodings, text_encodings) 
+            text_encodings[index_offset_text : index_offset_text + batch_size_text, :] = (
+                text_enc.cpu().detach().numpy()
+            )
 
-    # randomly sample 100 indices from len(cell_encodings)
-    within_top_ks = {k: [] for k in args.top_k}
-    for _ in tqdm(range(args.eval_iter)):
-        sampled_indices = np.random.choice(len(text_encodings), args.out_of, replace=False)
-        text_query_idx = sampled_indices[0]
+            cell_encodings[index_offset_cell : index_offset_cell + batch_size_cell, :] = (
+                cell_enc.cpu().detach().numpy()
+            )
 
-        # get the scores for the sampled indices
-        sampled_scores = scores[sampled_indices, text_query_idx]
-        sorted_indices = np.argsort(-1.0 * sampled_scores)  # High -> low
-        sampled_indices = sampled_indices[sorted_indices]
+            query_cell_ids[index_offset_text : index_offset_text + batch_size_text] = np.array(batch["cell_ids"])
+            index_offset_text += batch_size_text
 
-        for k in within_top_ks: within_top_ks[k].append(text_query_idx in sampled_indices[0:k])
-    print(f'length of within_top_ks: {len(within_top_ks[1])}')
-    # return the retrieval accuracies and retrievals
-    retrieval_accuracies = {k: np.mean(within_top_ks[k]) for k in args.top_k}
-    return retrieval_accuracies
+            db_cell_ids[index_offset_cell : index_offset_cell + batch_size_cell] = np.array(batch["cell_ids"])
+            index_offset_cell += batch_size_cell
+
+        print(f"Encoded {len(text_encodings)} query texts in {time.time() - t0:0.2f}.")
+        print(f"Encoded {len(cell_encodings)} database cells in {time.time() - t0:0.2f}.")
+
+        # go through all the embeddings and get a score between each, NxM
+        assert(len(cell_encodings) == len(text_encodings))
+
+    if (args.separate_cells_by_scene):
+        text_scene_names = {idx: scene_name for idx, scene_name in enumerate(text_scene_names)}
+        cells_names = zip(seen_cells, range(len(cell_encodings)))
+        cell_scene_names = {scene_name: idx for scene_name, idx in cells_names}
+        scores = calculate_scores(cell_encodings, text_encodings)
+        within_top_ks = {k: [] for k in args.top_k}
+        for _ in range(args.eval_iter):
+            for _ in range(args.eval_iter_count):
+                sampled_text_index = np.random.choice(len(text_encodings), 1, replace=False)[0]
+                sampled_text_scene_name = text_scene_names[sampled_text_index]
+
+                sampled_cells_indices = [cell_scene_names[sampled_text_scene_name]]
+                sampled_cells_indices.extend(np.random.choice([x for x in list(range(len(cell_encodings))) if x != cell_scene_names[sampled_text_scene_name]], args.out_of - 1, replace=False))
+                assert(len(set(sampled_cells_indices)) == len(sampled_cells_indices))
+                assert(len(sampled_cells_indices) == args.out_of)
+                
+                sampled_scores = scores[sampled_cells_indices, sampled_text_index]
+                sorted_indices = np.argsort(-1.0 * sampled_scores)  # High -> low
+                sampled_cells_indices = [sampled_cells_indices[i] for i in sorted_indices]
+
+            for k in within_top_ks: within_top_ks[k].append(cell_scene_names[sampled_text_scene_name] in sampled_cells_indices[0:k])
+        print(f'length of within_top_ks: {len(within_top_ks[1])}')
+        # return the retrieval accuracies and retrievals
+        retrieval_accuracies = {k: (np.mean(within_top_ks[k]), np.std(within_top_ks[k])) for k in args.top_k}
+        return retrieval_accuracies
+    else:
+        # scores = cell_encodings[:] @ text_encodings.T # NxM where N is the number of cells and M is the number of texts
+        scores = calculate_scores(cell_encodings, text_encodings) 
+
+        # randomly sample 100 indices from len(cell_encodings)
+        within_top_ks = {k: [] for k in args.top_k}
+        for _ in range(args.eval_iter):
+            sampled_indices = np.random.choice(len(text_encodings), args.out_of, replace=False)
+            text_query_idx = sampled_indices[0]
+
+            # get the scores for the sampled indices
+            sampled_scores = scores[sampled_indices, text_query_idx]
+            sorted_indices = np.argsort(-1.0 * sampled_scores)  # High -> low
+            sampled_indices = sampled_indices[sorted_indices]
+
+            for k in within_top_ks: within_top_ks[k].append(text_query_idx in sampled_indices[0:k])
+        print(f'length of within_top_ks: {len(within_top_ks[1])}')
+        # return the retrieval accuracies and retrievals
+        retrieval_accuracies = {k: np.mean(within_top_ks[k]) for k in args.top_k}
+        return retrieval_accuracies
 
 
 @torch.no_grad()
