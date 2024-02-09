@@ -97,8 +97,8 @@ def get_text_dataset_from_scanscribe():
     else: return texts, list(scene_names)
 
 def get_cells_dataset_from_3rscan(scene_names: List[str]):
-    path_to_all_cells = '/home/julia/Documents/h_coarse_loc/baselines/Text2Pos-CVPR2022/test_outputs/cells'
-    cell_files = os.listdir(path_to_all_cells)
+    # path_to_all_cells = '/home/julia/Documents/h_coarse_loc/baselines/Text2Pos-CVPR2022/test_outputs/cells'
+    # cell_files = os.listdir(path_to_all_cells)
 
     # cells_dict = {}
     # for c_file in tqdm(cell_files): # torch files
