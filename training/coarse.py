@@ -56,6 +56,10 @@ def train_scanscribe(model, dataloader, optimizer, criterion, args):
         else:
             loss = criterion(anchor, positive)
 
+        print(f'anchor: {anchor}')
+        print(f'positive: {positive}')
+        print(f'loss: {loss}')
+
         loss = loss
         loss.backward()
         optimizer.step()
@@ -197,8 +201,13 @@ def eval_scanscribe(model, dataloader, args):
         cells_names = zip(seen_cells, range(len(cell_encodings)))
         cell_scene_names = {scene_name: idx for scene_name, idx in cells_names}
         scores = calculate_scores(cell_encodings, text_encodings)
+        print(f'first cell encoding: {cell_encodings[0]}')
+        print(f'first text encoding: {text_encodings[0]}')
+        print(f'scores: {scores.shape}')
+        print(scores[:3, :3])
         within_top_ks = {k: [] for k in args.top_k}
         for _ in range(args.eval_iter):
+            within_iter_accuracies = {k: [] for k in args.top_k} # should be 0's and 1's
             for _ in range(args.eval_iter_count):
                 sampled_text_index = np.random.choice(len(text_encodings), 1, replace=False)[0]
                 sampled_text_scene_name = text_scene_names[sampled_text_index]
@@ -211,8 +220,9 @@ def eval_scanscribe(model, dataloader, args):
                 sampled_scores = scores[sampled_cells_indices, sampled_text_index]
                 sorted_indices = np.argsort(-1.0 * sampled_scores)  # High -> low
                 sampled_cells_indices = [sampled_cells_indices[i] for i in sorted_indices]
+                for k in within_iter_accuracies: within_iter_accuracies[k].append(cell_scene_names[sampled_text_scene_name] in sampled_cells_indices[0:k])
 
-            for k in within_top_ks: within_top_ks[k].append(cell_scene_names[sampled_text_scene_name] in sampled_cells_indices[0:k])
+            for k in within_top_ks: within_top_ks[k].append(np.mean(within_iter_accuracies[k]))
         print(f'length of within_top_ks: {len(within_top_ks[1])}')
         # return the retrieval accuracies and retrievals
         retrieval_accuracies = {k: (np.mean(within_top_ks[k]), np.std(within_top_ks[k])) for k in args.top_k}
