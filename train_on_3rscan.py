@@ -25,6 +25,11 @@ random.seed(0)
 import numpy as np
 np.random.seed(0)
 
+from timing import Timer
+
+from args import parse_args
+args = parse_args()
+
 class ScanScribeCoarseDataset(Dataset):
     def __init__(
         self,
@@ -152,7 +157,7 @@ def split_train_val(cells_list, text_list, split_ratio):
 
     # Split the scene_name_idx_map into train and val
     scene_names = list(scene_name_idx_map.keys())
-    random.seed(1)
+    random.seed(0)
     random.shuffle(scene_names)
     split = int(split_ratio * len(scene_names))
     scene_names_train, scene_names_val = scene_names[:split], scene_names[split:]
@@ -161,6 +166,10 @@ def split_train_val(cells_list, text_list, split_ratio):
     train_indices, val_indices = [], []
     for scene_name in scene_names_train: train_indices.extend(scene_name_idx_map[scene_name])
     for scene_name in scene_names_val: val_indices.extend(scene_name_idx_map[scene_name])
+
+    # So we don't feed it into the model with each scene followed by the other but the scenes are still separate between training and validation
+    random.shuffle(train_indices) 
+    random.shuffle(val_indices)
 
     # Get the cells and texts for train and val
     cells_list_train, text_list_train = [cells_list[i] for i in train_indices], [text_list[i] for i in train_indices]
@@ -171,24 +180,24 @@ def split_train_val(cells_list, text_list, split_ratio):
     return cells_list_train, text_list_train, [cell.scene_name for cell in cells_list_train], cells_list_val, text_list_val, [cell.scene_name for cell in cells_list_val]
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--batch_size_train', type=int, default=16)
-    parser.add_argument('--batch_size_val', type=int, default=1)
-    parser.add_argument('--pointnet_numpoints', type=int, default=256)
-    parser.add_argument('--top_k', type=int, nargs='+', default=[1, 2, 3, 5])
-    parser.add_argument('--out_of', type=int, default=10)
-    parser.add_argument('--eval_iter', type=int, default=20000)
-    parser.add_argument('--ranking_loss', type=str, default='pairwise')
-    parser.add_argument('--max_batches', type=int, default=None)
-    parser.add_argument('--margin', type=float, default=0.35)
-    parser.add_argument('--epochs', type=int, default=30)
-    parser.add_argument('--dataset_subset', type=int, default=None)
-    parser.add_argument('--euler', type=bool, default=False)
-    parser.add_argument('--continue_training', type=bool, default=False)
-    parser.add_argument('--pretrained', action='store_true') 
-    parser.add_argument('--separate_cells_by_scene', action='store_true')
-    parser.add_argument('--eval_iter_count', type=int, default=10)
-    args = parser.parse_args()
+    # parser = argparse.ArgumentParser()
+    # parser.add_argument('--batch_size_train', type=int, default=16)
+    # parser.add_argument('--batch_size_val', type=int, default=1)
+    # parser.add_argument('--pointnet_numpoints', type=int, default=256)
+    # parser.add_argument('--top_k', type=int, nargs='+', default=[1, 2, 3, 5])
+    # parser.add_argument('--out_of', type=int, default=10)
+    # parser.add_argument('--eval_iter', type=int, default=10000)
+    # parser.add_argument('--ranking_loss', type=str, default='pairwise')
+    # parser.add_argument('--max_batches', type=int, default=None)
+    # parser.add_argument('--margin', type=float, default=0.35)
+    # parser.add_argument('--epochs', type=int, default=30)
+    # parser.add_argument('--dataset_subset', type=int, default=None)
+    # parser.add_argument('--euler', type=bool, default=False)
+    # parser.add_argument('--continue_training', type=bool, default=False)
+    # parser.add_argument('--pretrained', action='store_true') 
+    # parser.add_argument('--separate_cells_by_scene', action='store_true')
+    # parser.add_argument('--eval_iter_count', type=int, default=10)
+    # args = parser.parse_args()
 
     print(f'Are we continuing training from a previous epoch? {args.continue_training}')
     print(f'Are we using pretrained? {args.pretrained}')
@@ -241,7 +250,12 @@ if __name__ == '__main__':
     text_list = torch.load('./training_testing_data/training_text_scanscribe_text2pos.pt')
     cells_list = torch.load('./training_testing_data/training_cells_scanscribe_text2pos.pt')
 
-    cells_list_train, text_list_train, scene_names_train, cells_list_val, text_list_val, scene_names_val = split_train_val(cells_list, text_list, 0.85)
+    cells_list_train, text_list_train, scene_names_train, cells_list_val, text_list_val, scene_names_val = split_train_val(cells_list, text_list, 0.9)
+
+    if args.no_validation_training_set: # just extend everything back together
+        cells_list_train = cells_list_train + cells_list_val
+        text_list_train = text_list_train + text_list_val
+        scene_names_train = scene_names_train + scene_names_val
 
     # transform = T.FixedPoints(args.pointnet_numpoints)
     transform = T.Compose([T.FixedPoints(args.pointnet_numpoints), T.NormalizeScale()])
@@ -291,6 +305,7 @@ if __name__ == '__main__':
     start_time = time.time()
 
     print(f'Running training on scanscribe')
+    timer = Timer()
     starting = 60 if args.continue_training else 0
     for e in range(starting, starting + args.epochs):
         epoch_losses, batches, model = train(
@@ -304,22 +319,29 @@ if __name__ == '__main__':
         print(f'epoch losses: {epoch_losses}')
         # print(f'batches: {batches}')
 
-        if e % 1 == 0 and e != 0:
-            # evaluate model
-            retrieval_accuracies = eval(
-                model, dataloader_val, args
-            )
-            # Write accuracies to file
-            with open(f'{prefix}/Text2Pos-CVPR2022/checkpoints/coarse_julia_fine_tuned_epochs_{e}_retrieval_accuracies_pretrained_{args.pretrained}.json', 'a') as f:
-                f.write(f'{e}: {retrieval_accuracies}')
-                f.write('\n')
-            torch.save(model, f'{prefix}/Text2Pos-CVPR2022/checkpoints/coarse_julia_fine_tuned_epochs_{e}_pretrained_{args.pretrained}.pth')
+        if e % 2 == 0 and e != 0:
+            if not args.no_validation_training_set:
+                # evaluate model
+                timer.start_time = time.time()
+                retrieval_accuracies = eval(
+                    model, dataloader_val, args, timer
+                )
+                timer.total_time = time.time() - timer.start_time
+                # Write accuracies to file
+                # with open(f'{prefix}/Text2Pos-CVPR2022/checkpoints/coarse_julia_fine_tuned_epochs_{e}_retrieval_accuracies_pretrained_{args.pretrained}.json', 'a') as f:
+                with open(f'{prefix}/Text2Pos-CVPR2022/checkpoints/retrieval_accuracies_{args.model_name}_checkpoint.json', 'a') as f:
+                    f.write(f'{e}: {retrieval_accuracies}')
+                    f.write('\n')
+            # torch.save(model, f'{prefix}/Text2Pos-CVPR2022/checkpoints/coarse_julia_fine_tuned_epochs_{e}_pretrained_{args.pretrained}.pth')
+            torch.save(model, f'{prefix}/Text2Pos-CVPR2022/checkpoints/{args.model_name}_{e}_checkpoint.pth')
 
     # save model checkpoint
-    torch.save(model, f'{prefix}/Text2Pos-CVPR2022/checkpoints/coarse_julia_fine_tuned_epochs_{e}_END_pretrained_{args.pretrained}.pth')
+    # torch.save(model, f'{prefix}/Text2Pos-CVPR2022/checkpoints/coarse_julia_fine_tuned_epochs_{e}_END_pretrained_{args.pretrained}.pth')
+    torch.save(model, f'{prefix}/Text2Pos-CVPR2022/checkpoints/{args.model_name}_{e}_checkpoint.pth')
 
     # save the model args
-    with open(f'{prefix}/Text2Pos-CVPR2022/checkpoints/coarse_julia_fine_tuned_epochs_{e}_END_args_pretrained_{args.pretrained}.json', 'w') as f:
+    # with open(f'{prefix}/Text2Pos-CVPR2022/checkpoints/coarse_julia_fine_tuned_epochs_{e}_END_args_pretrained_{args.pretrained}.json', 'w') as f:
+    with open(f'{prefix}/Text2Pos-CVPR2022/checkpoints/args_{args.model_name}.json', 'w') as f:
         json.dump(args.__dict__, f, indent=4)
 
     # end time
