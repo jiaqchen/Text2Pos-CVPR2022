@@ -114,7 +114,8 @@ def get_cells_dataset_from_3rscan(scene_names: List[str]):
     return all_cells
 
 def get_known_words():
-    path_to_scanscribe_json = f'{prefix}/h_coarse_loc/data/scanscribe/data/scanscribe_cleaned.json'
+    if not args.euler: path_to_scanscribe_json = '/home/julia/Documents/h_coarse_loc/data/scanscribe/data/scanscribe_cleaned.json'
+    else: path_to_scanscribe_json = f'{prefix}/h_coarse_loc/data/scanscribe/data/scanscribe_cleaned.json'
     with open(path_to_scanscribe_json, 'r') as f:
         scanscribe_json = json.load(f)
 
