@@ -22,6 +22,8 @@ from easydict import EasyDict
 import os
 import os.path as osp
 
+import sys
+
 from models.cell_retrieval import CellRetrievalNetwork
 
 from datapreparation.kitti360pose.utils import SCENE_NAMES, SCENE_NAMES_TRAIN, SCENE_NAMES_VAL
@@ -55,10 +57,6 @@ def train_scanscribe(model, dataloader, optimizer, criterion, args):
             loss = criterion(anchor, positive, negative)
         else:
             loss = criterion(anchor, positive)
-
-        print(f'anchor: {anchor}')
-        print(f'positive: {positive}')
-        print(f'loss: {loss}')
 
         loss = loss
         loss.backward()
@@ -117,7 +115,7 @@ def calculate_scores(im, s):
     return scores
 
 @torch.no_grad()
-def eval_scanscribe(model, dataloader, args):
+def eval_scanscribe(model, dataloader, args, timer):
     model.eval()
 
     cell_encodings = np.zeros((len(dataloader), model.embed_dim))
@@ -136,7 +134,10 @@ def eval_scanscribe(model, dataloader, args):
 
     if (args.separate_cells_by_scene):
         for batch in dataloader:
+            t1 = time.time()                                                        # TIMING
             text_enc = model.encode_text(batch["texts"])
+            timer.text2pos_text_embedding_time.append(time.time() - t1)             # TIMING
+            timer.text2pos_text_embedding_iter.append(1)                            # TIMING
             batch_size_text = len(text_enc)
             text_encodings[index_offset_text : index_offset_text + batch_size_text, :] = (text_enc.cpu().detach().numpy())
             query_cell_ids[index_offset_text : index_offset_text + batch_size_text] = np.array(batch["cell_ids"])
@@ -196,17 +197,22 @@ def eval_scanscribe(model, dataloader, args):
         # go through all the embeddings and get a score between each, NxM
         assert(len(cell_encodings) == len(text_encodings))
 
+
+
     if (args.separate_cells_by_scene):
         text_scene_names = {idx: scene_name for idx, scene_name in enumerate(text_scene_names)}
         cells_names = zip(seen_cells, range(len(cell_encodings)))
         cell_scene_names = {scene_name: idx for scene_name, idx in cells_names}
-        scores = calculate_scores(cell_encodings, text_encodings)
+        t1 = time.time()                                                                            # TIMING
+        scores = calculate_scores(cell_encodings, text_encodings)                      
+        timer.text2pos_matching_score_time.append(time.time() - t1)                                      # TIMING
+        timer.text2pos_matching_score_iter.append(cell_encodings.shape[0] * text_encodings.shape[0])     # TIMING
         print(f'first cell encoding: {cell_encodings[0]}')
         print(f'first text encoding: {text_encodings[0]}')
         print(f'scores: {scores.shape}')
         print(scores[:3, :3])
         within_top_ks = {k: [] for k in args.top_k}
-        for _ in range(args.eval_iter):
+        for _ in range(args.eval_iter):                                                                                                     # TIMING
             within_iter_accuracies = {k: [] for k in args.top_k} # should be 0's and 1's
             for _ in range(args.eval_iter_count):
                 sampled_text_index = np.random.choice(len(text_encodings), 1, replace=False)[0]
@@ -218,7 +224,10 @@ def eval_scanscribe(model, dataloader, args):
                 assert(len(sampled_cells_indices) == args.out_of)
                 
                 sampled_scores = scores[sampled_cells_indices, sampled_text_index]
+                t1 = time.time()
                 sorted_indices = np.argsort(-1.0 * sampled_scores)  # High -> low
+                timer.text2pos_matching_time.append(time.time() - t1)
+                timer.text2pos_matching_iter.append(1)
                 sampled_cells_indices = [sampled_cells_indices[i] for i in sorted_indices]
                 for k in within_iter_accuracies: within_iter_accuracies[k].append(cell_scene_names[sampled_text_scene_name] in sampled_cells_indices[0:k])
 

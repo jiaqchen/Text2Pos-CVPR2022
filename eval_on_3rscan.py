@@ -22,6 +22,11 @@ random.seed(0)
 import numpy as np
 np.random.seed(0)
 
+from timing import Timer
+
+from args import parse_args
+args = parse_args()
+
 class ScanScribeCoarseDataset(Dataset):
     def __init__(
         self,
@@ -153,17 +158,15 @@ def get_dataloader(cells, texts, scene_names, transform, args):
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--batch_size_val', type=int, default=1)
-    parser.add_argument('--pointnet_numpoints', type=int, default=256)
-    parser.add_argument('--top_k', type=int, nargs='+', default=[1, 2, 3, 5])
-    parser.add_argument('--out_of', type=int, default=10)
-    parser.add_argument('--eval_iter', type=int, default=2000000)
-    parser.add_argument('--dataset_subset', type=int, default=None)
-    parser.add_argument('--euler', type=bool, default=False)
-    parser.add_argument('--separate_cells_by_scene', action='store_true')
-    parser.add_argument('--eval_iter_count', type=int, default=10)
-    args = parser.parse_args()
+    # parser = argparse.ArgumentParser()
+    # parser.add_argument('--batch_size_val', type=int, default=1)
+    # parser.add_argument('--pointnet_numpoints', type=int, default=256)
+    # parser.add_argument('--top_k', type=int, nargs='+', default=[1, 2, 3, 5])
+    # parser.add_argument('--out_of', type=int, default=10)
+    # parser.add_argument('--eval_iter', type=int, default=10000)
+    # parser.add_argument('--dataset_subset', type=int, default=None)
+    # parser.add_argument('--euler', type=bool, default=False)
+    # args = parser.parse_args()
 
     # Load the coarse model from Text2Pos, pretrained
     # model = torch.load('/home/julia/Documents/h_coarse_loc/baselines/Text2Pos-CVPR2022/checkpoints/coarse_contN_acc0.35_lr1_p256.pth')
@@ -171,11 +174,14 @@ if __name__ == '__main__':
     # Load fine tuned model
     # model = torch.load(f'/home/julia/Documents/h_coarse_loc/baselines/Text2Pos-CVPR2022/checkpoints/coarse_julia_fine_tuned_epochs_END.pth')
     prefix = '/cluster/project/cvg/jiaqchen' if args.euler else '/home/julia/Documents/h_coarse_loc/baselines'
-    # model = torch.load(f'{prefix}/Text2Pos-CVPR2022/checkpoints/coarse_julia_fine_tuned_epochs_119_END.pth')
-    model = torch.load(f'{prefix}/Text2Pos-CVPR2022/checkpoints/coarse_julia_fine_tuned_epochs_6_batch_size_16.pth') # 47899954
-    model_name = 'coarse_julia_fine_tuned_epochs_6_batch_size_16.pth'
-    # model = torch.load(f'{prefix}/Text2Pos-CVPR2022/checkpoints/coarse_julia_fine_tuned_epochs_10_pretrained_False.pth') # 47892598
-    # model_name = 'coarse_julia_fine_tuned_epochs_10_pretrained_False.pth'
+    # # model = torch.load(f'{prefix}/Text2Pos-CVPR2022/checkpoints/coarse_julia_fine_tuned_epochs_119_END.pth')
+    # model = torch.load(f'{prefix}/Text2Pos-CVPR2022/checkpoints/coarse_julia_fine_tuned_epochs_6_batch_size_16.pth') # 47899954
+    # model_name = 'coarse_julia_fine_tuned_epochs_6_batch_size_16.pth'
+    # # model = torch.load(f'{prefix}/Text2Pos-CVPR2022/checkpoints/coarse_julia_fine_tuned_epochs_10_pretrained_False.pth') # 47892598
+    # # model_name = 'coarse_julia_fine_tuned_epochs_10_pretrained_False.pth'
+
+    model = torch.load(f'{prefix}/Text2Pos-CVPR2022/checkpoints/{args.model_name}.pth') # 47899954
+    model_name = args.model_name
 
     print(f'model attribute variation: {model.variation}')
     print(f'model atribute embed_dim: {model.embed_dim}')
@@ -216,47 +222,61 @@ if __name__ == '__main__':
     cell_list_human_test = torch.load(f'{prefix}/Text2Pos-CVPR2022/training_testing_data/testing_cells_human_text2pos.pt')
     scene_names_human_test = [cell.scene_name for cell in cell_list_human_test]
 
-    # transform = T.FixedPoints(args.pointnet_numpoints)
+    # transform = T.FixedPoints(args.pointnet_numpoints)    
     transform = T.Compose([T.FixedPoints(args.pointnet_numpoints), T.NormalizeScale()])
 
     dataloader_scanscribe = get_dataloader(cell_list_scanscribe_test, text_list_scanscribe_test, scene_names_scanscribe_test, transform, args)
-    dataloader_scanscribe_train = get_dataloader(cells_list_train, text_list_train, scene_names_train, transform, args)
-    data_loader_scanscribe_val = get_dataloader(cell_list_val, text_list_val, scene_names_val, transform, args)
+    # dataloader_scanscribe_train = get_dataloader(cells_list_train, text_list_train, scene_names_train, transform, args)
+    # data_loader_scanscribe_val = get_dataloader(cell_list_val, text_list_val, scene_names_val, transform, args)
     dataloader_human = get_dataloader(cell_list_human_test, text_list_human_test, scene_names_human_test, transform, args)
 
-    epochs = 6
+    print(f'len of cell_list_scanscribe_test: {len(set(scene_names_scanscribe_test))}')
+    print(f'len of cell_list_human_test: {len(set(scene_names_human_test))}')
 
     import time
+    scanscribe_timer = Timer()
     print(f'Running evaluation on scanscribe')
-    start_time = time.time()
-    retrieval_accuracies_scanscribe = eval(
-        model, dataloader_scanscribe, args
-    )
-    print(f'Elapsed time scanscribe: {time.time() - start_time}')
-    print(f'Retrieval Accuracies: {retrieval_accuracies_scanscribe}')
-    with open(f'{prefix}/Text2Pos-CVPR2022/eval_outputs/retrieval_accuracies_scanscribe_out_of_{args.out_of}_epochs_{epochs}_text2pos_{model_name}.json', 'w') as f:
+    scanscribe_timer.start_time = time.time()
+    if args.eval_entire_dataset:
+        args.out_of = 55
+        assert(len(set(scene_names_scanscribe_test)) == 55)
+        args.top_k = [1, 5, 10, 20, 30]
+        args.model_name += '_topkentiredataset'
+    retrieval_accuracies_scanscribe = eval(model, dataloader_scanscribe, args, timer=scanscribe_timer)
+    scanscribe_timer.total_time = time.time() - scanscribe_timer.start_time
+    scanscribe_timer.save(f'{prefix}/Text2Pos-CVPR2022/eval_outputs/timer_scanscribe_{args.model_name}.txt', args)
+
+    print(f'Elapsed time scanscribe: {scanscribe_timer.total_time}')
+    print(f'Retrieval Accuracies Scanscribe: {retrieval_accuracies_scanscribe}')
+    with open(f'{prefix}/Text2Pos-CVPR2022/eval_outputs/retrieval_accuracies_scanscribe_{args.model_name}.json', 'w') as f:
         json.dump(retrieval_accuracies_scanscribe, f, indent=4)
 
-    # Scanscribe Train
-    retrieval_acc_scanscribe_train = eval(model, dataloader_scanscribe_train, args)
-    with open(f'{prefix}/Text2Pos-CVPR2022/eval_outputs/retrieval_accuracies_scanscribe_train_out_of_{args.out_of}_epochs_{epochs}_text2pos_{model_name}.json', 'w') as f:
-        json.dump(retrieval_acc_scanscribe_train, f, indent=4)
-    retrieval_acc_scanscribe_val = eval(model, data_loader_scanscribe_val, args)
-    with open(f'{prefix}/Text2Pos-CVPR2022/eval_outputs/retrieval_accuracies_scanscribe_val_out_of_{args.out_of}_epochs_{epochs}_text2pos_{model_name}.json', 'w') as f:
-        json.dump(retrieval_acc_scanscribe_val, f, indent=4)
+    # # Scanscribe Train
+    # retrieval_acc_scanscribe_train = eval(model, dataloader_scanscribe_train, args)
+    # with open(f'{prefix}/Text2Pos-CVPR2022/eval_outputs/retrieval_accuracies_scanscribe_train_out_of_{args.out_of}_epochs_{epochs}_text2pos_{model_name}.json', 'w') as f:
+    #     json.dump(retrieval_acc_scanscribe_train, f, indent=4)
+    # retrieval_acc_scanscribe_val = eval(model, data_loader_scanscribe_val, args)
+    # with open(f'{prefix}/Text2Pos-CVPR2022/eval_outputs/retrieval_accuracies_scanscribe_val_out_of_{args.out_of}_epochs_{epochs}_text2pos_{model_name}.json', 'w') as f:
+    #     json.dump(retrieval_acc_scanscribe_val, f, indent=4)
 
-    if (args.out_of <= len(text_list_human_test)): 
+    human_timer = Timer()
+    if (args.out_of <= len(text_list_human_test)): # cannot sample more than the size of test human
         print(f'Running evaluation on human')
-        start_time = time.time()
-        retrieval_accuracies_human = eval(
-            model, dataloader_human, args
-        )
-        print(f'Elapsed time human: {time.time() - start_time}')
+        human_timer.start_time = time.time()
+        if args.eval_entire_dataset:
+            args.out_of = 142 # TODO: check this unique scenes
+            assert(len(set(scene_names_human_test)) == 142)
+            args.top_k = [1, 5, 10, 20, 30, 50, 75]
+        retrieval_accuracies_human = eval(model, dataloader_human, args, timer=human_timer)
+        human_timer.total_time = time.time() - human_timer.start_time
+        human_timer.save(f'{prefix}/Text2Pos-CVPR2022/eval_outputs/timer_human_{args.model_name}.txt', args)
+
+        print(f'Elapsed time human: {human_timer.total_time}')
         print(f'Retrieval Accuracies: {retrieval_accuracies_human}')
-        with open(f'{prefix}/Text2Pos-CVPR2022/eval_outputs/retrieval_accuracies_human_out_of_{args.out_of}_epochs_{epochs}_text2pos_{model_name}.json', 'w') as f:
+        with open(f'{prefix}/Text2Pos-CVPR2022/eval_outputs/retrieval_accuracies_human_{args.model_name}.json', 'w') as f:
             json.dump(retrieval_accuracies_human, f, indent=4)
 
 
     # also save args from argparser
-    with open(f'{prefix}/Text2Pos-CVPR2022/eval_outputs/args_out_of_{args.out_of}_epochs_{epochs}_{model_name}.json', 'w') as f:
+    with open(f'{prefix}/Text2Pos-CVPR2022/eval_outputs/args_{args.model_name}.json', 'w') as f:
         json.dump(vars(args), f, indent=4)
